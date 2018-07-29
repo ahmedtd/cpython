@@ -206,6 +206,8 @@ PyCode_New(int argcount, int kwonlyargcount,
     co->co_zombieframe = NULL;
     co->co_weakreflist = NULL;
     co->co_extra = NULL;
+    co->co_basic_jitcode = NULL;
+    co->co_basic_jitcode_len = -1;
     return co;
 }
 

@@ -329,6 +329,7 @@ PYTHON_OBJS=	\
 		Python/ast_unparse.o \
 		Python/bltinmodule.o \
 		Python/ceval.o \
+                Python/cjit.o \
 		Python/compile.o \
 		Python/codecs.o \
 		Python/dynamic_annotations.o \
@@ -779,6 +780,12 @@ Modules/pwdmodule.o: $(srcdir)/Modules/pwdmodule.c $(srcdir)/Modules/posixmodule
 
 Modules/signalmodule.o: $(srcdir)/Modules/signalmodule.c $(srcdir)/Modules/posixmodule.h
 
+Python/cjit.dynasm.c: $(srcdir)/Python/cjit.c
+	luajit $(srcdir)/Python/dynasm/dynasm.lua --nolineno -o $@ -D X64 $<
+
+Python/cjit.o: Python/cjit.dynasm.c
+	$(CC) -c $(PY_CORE_CFLAGS) -o $@ $<
+
 Python/dynload_shlib.o: $(srcdir)/Python/dynload_shlib.c Makefile
 	$(CC) -c $(PY_CORE_CFLAGS) \
 		-DSOABI='"$(SOABI)"' \
@@ -856,6 +863,8 @@ Python/importdl.o: $(srcdir)/Python/importdl.c
 
 Objects/unicodectype.o:	$(srcdir)/Objects/unicodectype.c \
 				$(srcdir)/Objects/unicodetype_db.h
+
+
 
 BYTESTR_DEPS = \
 		$(srcdir)/Objects/stringlib/count.h \
@@ -1028,6 +1037,7 @@ PYTHON_HEADERS= \
 		$(PARSER_HEADERS) \
 		$(srcdir)/Include/Python-ast.h \
 		$(srcdir)/Include/internal/ceval.h \
+                $(srcdir)/Include/internal/cjit.h \
 		$(srcdir)/Include/internal/gil.h \
 		$(srcdir)/Include/internal/mem.h \
 		$(srcdir)/Include/internal/pygetopt.h \

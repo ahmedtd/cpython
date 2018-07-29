@@ -1,4 +1,3 @@
-
 /* Execute compiled code */
 
 /* XXX TO DO:
@@ -11,6 +10,7 @@
 
 #include "Python.h"
 #include "internal/pystate.h"
+#include "internal/cjit.h"
 
 #include "code.h"
 #include "dictobject.h"
@@ -532,6 +532,26 @@ PyEval_EvalFrame(PyFrameObject *f) {
 PyObject *
 PyEval_EvalFrameEx(PyFrameObject *f, int throwflag)
 {
+    // TODO: Expand the JITed code to take throwflag.
+    typedef PyObject* (*frame_fn)(PyFrameObject *f);
+
+    // Use preexisting generated code.
+    if(f->f_code->co_basic_jitcode) {
+        fprintf(stderr, "Found JITed code at %p, jumping\n", f->f_code->co_basic_jitcode);
+        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode))(f);
+        fprintf(stderr, "Returned from JITed code \n");
+        return val;
+    }
+
+    // Attempt JIT generation.
+    _PyJIT_JITCodeGen(f);
+    if(f->f_code->co_basic_jitcode) {
+        fprintf(stderr, "Generated JITed code at %p, jumping\n", f->f_code->co_basic_jitcode);
+        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode))(f);
+        fprintf(stderr, "Returned from JITed code \n");
+        return val;
+    }
+
     PyThreadState *tstate = PyThreadState_GET();
     return tstate->interp->eval_frame(f, throwflag);
 }

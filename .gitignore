@@ -23,6 +23,7 @@ installp/
 *.profclang?
 *.profraw
 *.dyn
+*.dynasm.c
 .gdb_history
 Doc/build/
 Doc/venv/

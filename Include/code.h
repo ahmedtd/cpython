@@ -48,6 +48,9 @@ typedef struct {
        Type is a void* to keep the format private in codeobject.c to force
        people to go through the proper APIs. */
     void *co_extra;
+
+    void *co_basic_jitcode;
+    size_t co_basic_jitcode_len;
 } PyCodeObject;
 
 /* Masks for co_flags above */
