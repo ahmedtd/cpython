@@ -533,22 +533,18 @@ PyObject *
 PyEval_EvalFrameEx(PyFrameObject *f, int throwflag)
 {
     // TODO: Expand the JITed code to take throwflag.
-    typedef PyObject* (*frame_fn)(PyFrameObject *f);
+    typedef PyObject* (*frame_fn)(PyFrameObject *f, int throwflag);
 
     // Use preexisting generated code.
     if(f->f_code->co_basic_jitcode) {
-        fprintf(stderr, "Found JITed code at %p, jumping\n", f->f_code->co_basic_jitcode);
-        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode))(f);
-        fprintf(stderr, "Returned from JITed code \n");
+        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode_entry))(f, throwflag);
         return val;
     }
 
     // Attempt JIT generation.
     _PyJIT_JITCodeGen(f);
     if(f->f_code->co_basic_jitcode) {
-        fprintf(stderr, "Generated JITed code at %p, jumping\n", f->f_code->co_basic_jitcode);
-        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode))(f);
-        fprintf(stderr, "Returned from JITed code \n");
+        PyObject *val = ((frame_fn)(f->f_code->co_basic_jitcode_entry))(f, throwflag);
         return val;
     }
 

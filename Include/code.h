@@ -51,6 +51,7 @@ typedef struct {
 
     void *co_basic_jitcode;
     size_t co_basic_jitcode_len;
+    void *co_basic_jitcode_entry;
 } PyCodeObject;
 
 /* Masks for co_flags above */

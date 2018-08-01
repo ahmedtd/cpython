@@ -35,10 +35,13 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
 {
     PyCodeObject *co = f->f_code;
 
+    // Bail out on any coroutine stuff.  The generated code fails to run, even
+    // if it doesn't contain any coroutine-specific instructions.
     if (co->co_flags & (CO_GENERATOR | CO_COROUTINE | CO_ASYNC_GENERATOR)) {
         return;
     }
 
+    // Retrieve bytecode.
     char *bytecode = NULL;
     Py_ssize_t bytecode_len = -1;
     if (-1 == PyBytes_AsStringAndSize(co->co_code, &bytecode, &bytecode_len)) {
@@ -50,36 +53,64 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     dasm_init(&d, 1);
     dasm_State **Dst = &d;
 
-    |.if X64
     |.arch x64
-    |.else
-    |.arch x86
-    |.endif
 
     // We'll use a callee-save register for stack-top.  Eventually, it will be
     // worthwhile to think about eliding stack operations, but for simplicity
     // we'll just do a wholesale adaptation of ceval to begin with.
     |.define reg_stack_top, r12
-
     |.define reg_frame, r13
+    |.define reg_throwflag, r14
 
     |.type PYFRAME, PyFrameObject
     |.type PYCODE, PyCodeObject
     |.type PYTHREADSTATE, PyThreadState
     |.type PYOBJECT, PyObject
+    |.type PYTYPE, PyTypeObject
     |.type PYRUNTIMESTATE, _PyRuntimeState
     |.type GILSTATE, (struct _gilstate_runtime_state)
+
+    /* Takes the address of a PyObject in rdi, and a caller-specified temp
+       register.
+
+       Clobbers rdi, tmp_reg
+    */
+    |.macro Py_XDECREF, tmp_reg
+    | test rdi, rdi
+    | jz >1
+    |
+    | mov tmp_reg, PYOBJECT:rdi->ob_refcnt
+    | sub aword [tmp_reg], 1
+    | ja >1
+    |
+    | mov tmp_reg, PYOBJECT:rdi->ob_type
+    | mov tmp_reg, PYTYPE:tmp_reg->tp_dealloc
+    | call tmp_reg
+    |
+    |1:
+    |.endmacro
 
     |.section code
 
     dasm_init(&d, DASM_MAXSECTION);
 
+    |.globals lbl_
+    void* labels[lbl__MAX];
+    dasm_setupglobal(&d, labels, lbl__MAX);
+
     |.actionlist py_actions
     dasm_setup(&d, py_actions);
+
+    unsigned int next_pc = 0;
+    unsigned int num_pc = 8;
+    dasm_growpc(&d, num_pc);
+
+    |->jit_entry:
 
     // Function prologue --- preserve any callee-save registers we clobber.
     | push r12
     | push r13
+    | push reg_throwflag
     | push rbp
     | mov rbp, rsp
 
@@ -87,6 +118,7 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     | mov reg_frame, rdi
 
     // throwflag arrives in rsi
+    | mov reg_throwflag, rsi
 
     // SysV ABI calling order
     //
@@ -110,6 +142,10 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     // TODO: call Py_EnterRecursiveCall, returning if it fails.  (It's a macro,
     // not a function).
 
+    // Support for generator.throw()
+    | test reg_throwflag, reg_throwflag
+    | jnz ->error
+
     _Py_CODEUNIT *bytecode_src = (_Py_CODEUNIT*) bytecode;
     _Py_CODEUNIT *bytecode_point = bytecode_src;
     _Py_CODEUNIT *bytecode_lim = (_Py_CODEUNIT*) bytecode + bytecode_len / sizeof(_Py_CODEUNIT);
@@ -117,7 +153,34 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
         _Py_CODEUNIT instr = *bytecode_point;
         int opcode = _Py_OPCODE(instr);
         int oparg = _Py_OPARG(instr);
+
         switch(opcode) {
+        case NOP: {
+            break;
+        }
+        case LOAD_FAST: {
+
+            // f_localsplus is a variable-sized array at the end of the frame
+            // object, so it's not correct to use dynasm's built-in deref
+            // support.
+            int local_offset = offsetof(PyFrameObject, f_localsplus) + 8 * oparg;
+            | mov rdi, [reg_frame+local_offset]
+
+            // TODO:
+            // if (value == NULL) {
+            //     format_exc_check_arg(PyExc_UnboundLocalError,
+            //                          UNBOUNDLOCAL_ERROR_MSG,
+            //                          PyTuple_GetItem(co->co_varnames, oparg));
+            //     goto error;
+            // }
+
+            | add aword PYOBJECT:rdi->ob_refcnt, 1
+
+            | mov [reg_stack_top], rdi
+            | add reg_stack_top, 8
+
+            break;
+        }
         case LOAD_CONST: {
             | mov rdi, PYFRAME:reg_frame->f_code
             | mov rdi, PYCODE:rdi->co_consts
@@ -131,10 +194,24 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
             | add reg_stack_top, 8
             break;
         }
+        case STORE_FAST: {
+            | sub reg_stack_top, 8
+            | mov rdx, [reg_stack_top]
+
+            int local_offset = offsetof(PyFrameObject, f_localsplus) + 8 * oparg;
+            | mov rdi, [reg_frame+local_offset]
+            | mov [reg_frame+local_offset], rdx
+
+            | Py_XDECREF rsi
+
+            break;
+        }
         case RETURN_VALUE: {
             | sub reg_stack_top, 8
             | mov rax, [reg_stack_top]
-            goto emit_return_or_yield;
+            | jmp ->return_or_yield
+
+            break;
         }
         default: {
             // Unsupported instruction.  Not an error, but we need to bail out of compilation.
@@ -149,19 +226,54 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
         ++bytecode_point;
     }
 
-  emit_exception_unwind:
-    // TODO: Generate code corresponding to the exception_unwind section in ceval
-  emit_return_or_yield:
-  emit_exit_eval_frame:
+    // TODO: Emit a guard so that execution can't walk off the end of the
+    // generated instructions.
+
+    |->error:
+
+    // TODO: Assemble
+    //
+    // if (!PyErr_Occurred()) {
+    //     PyErr_SetString(PyExc_SystemError,
+    //                     "error return without exception set");
+    // }
+
+    // TODO: Assemble PyTraceBack_Here(f)
+
+    // TODO: Assemble
+    //
+    // if (tstate->c_tracefunc != NULL)
+    //     call_exc_trace(tstate->c_tracefunc,
+    //                    tstate->c_traceobj,
+    //                    tstate,
+    //                    f);
+
+    |->exception_unwind:
+
+    // TODO: Emit exception unwind code.  We don't support any try opcodes yet,
+    // so it's fine not to support it.
+
+    // Hmmm... error and exception_unwind are in the main loop in ceval.c, since
+    // they can `continue` back to processing the next instruction, after doing
+    // the proper try block.
+    //
+    // I think I'm going to need to emit pc labels for each bytecode
+    // instruction...
+
+    // TODO: emit tracing code
+
 
     // TODO: Call Py_LeaveRecursiveCall (It's a macro)
 
     // Now the return value is in rax
 
+    |->return_or_yield:
+    |
     | mov byte PYFRAME:reg_frame->f_executing, 0
 
     | mov64 rbx, ((uintptr_t)&(_PyRuntime.gilstate.tstate_current))
-    | mov aword PYTHREADSTATE:rbx->frame, reg_frame
+    | mov rdi, PYFRAME:reg_frame->f_back
+    | mov aword PYTHREADSTATE:rbx->frame, rdi
 
     | mov rdi, PYFRAME:reg_frame->f_code
     | mov rsi, rax
@@ -171,60 +283,13 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
 
     | mov rsp, rbp
     | pop rbp
+    | pop reg_throwflag
     | pop r13
     | pop r12
     | ret
 
-    fprintf(stderr, "Linking and encoding\n");
     link_and_encode(&d, &(co->co_basic_jitcode), &(co->co_basic_jitcode_len));
-
-    // Py_INCREF looks like
-    //
-    // obj->ob_refcnt = obj->ob_refcnt + 1;
-
-    // Py_DECREF looks like
-    //
-    // obj->ob_refcnt = obj->ob_refcnt - 1;
-    // if(obj->ob_refcnt == 0) {
-    //     _Py_Dealloc(obj);
-    // }
-
-    // _Py_Dealloc looks like
-    //
-    // Py_TYPE(obj)->tp_dealloc(obj);
-
-    // Py_Type looks like
-    //
-    // obj->ob_type
-
-    // PyThreadState *tstate = PyThreadState_GET();
-    // tstate->frame = f;
-    // stack_pointer = f->f_stacktop;
-    // f->f_stacktop = NULL;
-    // f->f_executing = 1;
-    //
-    // if(Py_EnterRecursiveCall("")) {
-    //   return NULL;
-    // }
-    //
-    // {
-    //   PyObject *value = GETITEM(consts, oparg);
-    //   Py_INCREF(value);
-    //   PUSH(value);
-    //   FAST_DISPATCH();
-    // }
-    // {
-    //   retval = POP();
-    //   assert(f->f_iblock == 0);
-    //   goto return_or_yield;
-    // }
-    // return_or_yield:
-    // {
-    //   Py_LeaveRecursiveCall()
-    //   f->f_executing = 0;
-    //   tstate->frame = f->f_back;
-    //   return _Py_CheckFunctionResult(NULL, retval, "PyEval_EvalFrameEx"
-    // }
+    co->co_basic_jitcode_entry = labels[lbl_jit_entry];
 
   cleanup_dasm:
     dasm_free(&d);
