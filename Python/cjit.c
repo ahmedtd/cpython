@@ -226,8 +226,12 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
         ++bytecode_point;
     }
 
-    // TODO: Emit a guard so that execution can't walk off the end of the
-    // generated instructions.
+    // Emit a guard (ud2 instruction) that prevents execution from walking off
+    // of the end of the instructions generated for the actual Python bytecode.
+    // The only way to reach the exit code below is for a bytecode instruction
+    // to explicitly jump to it (RETURN_VALUE, for example).
+    |.byte 0x0f
+    |.byte 0x0b
 
     |->error:
 
