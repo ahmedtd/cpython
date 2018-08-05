@@ -129,7 +129,9 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     // Record this frame in the current thread state
     //
     // _Py_atomic_load_relaxed(_PyRuntime.gilstate.tstate_current)
-    | mov64 rax, ((uintptr_t)&(_PyRuntime.gilstate.tstate_current))
+    uintptr_t address_of_tstate_current = (uintptr_t)(&(_PyRuntime.gilstate.tstate_current));
+    | mov64 rax, address_of_tstate_current
+    | mov rax, [rax]
     | mov aword PYTHREADSTATE:rax->frame, reg_frame
 
     // Null out the frame's copy of the stack top
@@ -275,7 +277,8 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     |
     | mov byte PYFRAME:reg_frame->f_executing, 0
 
-    | mov64 rbx, ((uintptr_t)&(_PyRuntime.gilstate.tstate_current))
+    | mov64 rbx, address_of_tstate_current
+    | mov rbx, [rbx]
     | mov rdi, PYFRAME:reg_frame->f_back
     | mov aword PYTHREADSTATE:rbx->frame, rdi
 
