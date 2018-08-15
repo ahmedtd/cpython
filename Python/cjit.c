@@ -79,8 +79,7 @@ void _PyJIT_JITCodeGen(PyFrameObject *f)
     | test rdi, rdi
     | jz >1
     |
-    | mov tmp_reg, PYOBJECT:rdi->ob_refcnt
-    | sub aword [tmp_reg], 1
+    | sub aword  PYOBJECT:rdi->ob_refcnt, 1
     | ja >1
     |
     | mov tmp_reg, PYOBJECT:rdi->ob_type
