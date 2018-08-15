@@ -4,6 +4,10 @@
 #include "code.h"
 #include "structmember.h"
 
+// TODO: Remove me so that codeobject doesn't know about the internals
+// of allocating an executable page.
+#include <sys/mman.h>
+
 /* Holder for co_extra information */
 typedef struct {
     Py_ssize_t ce_size;
@@ -430,6 +434,13 @@ code_dealloc(PyCodeObject *co)
         }
 
         PyMem_Free(co_extra);
+    }
+
+    if (NULL != co->co_basic_jitcode) {
+        munmap(co->co_basic_jitcode, co->co_basic_jitcode_len);
+        co->co_basic_jitcode = NULL;
+        co->co_basic_jitcode_len = 0;
+        co->co_basic_jitcode_entry = NULL;
     }
 
     Py_XDECREF(co->co_code);
