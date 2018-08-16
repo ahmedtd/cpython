@@ -608,38 +608,77 @@ PyThreadState_Clear(PyThreadState *tstate)
 static void
 tstate_delete_common(PyThreadState *tstate)
 {
+    fprintf(stderr, "Checkpoint 4\n");
+
     PyInterpreterState *interp;
     if (tstate == NULL)
         Py_FatalError("PyThreadState_Delete: NULL tstate");
+
+    fprintf(stderr, "Checkpoint 5\n");
+
     interp = tstate->interp;
     if (interp == NULL)
         Py_FatalError("PyThreadState_Delete: NULL interp");
+
+    fprintf(stderr, "Checkpoint 6\n");
+
     HEAD_LOCK();
-    if (tstate->prev)
+
+    fprintf(stderr, "Checkpoint 7\n");
+
+    // TODO: Somehow we are clobbering the tstate->prev pointer (I think).
+
+    if (tstate->prev) {
+        fprintf(stderr, "case 1\n");
         tstate->prev->next = tstate->next;
-    else
+    } else {
+        fprintf(stderr, "case 2\n");
         interp->tstate_head = tstate->next;
+    }
+
+    fprintf(stderr, "Checkpoint 8\n");
+
     if (tstate->next)
         tstate->next->prev = tstate->prev;
+
+    fprintf(stderr, "Checkpoint 9\n");
+
     HEAD_UNLOCK();
+
+    fprintf(stderr, "Checkpoint 10\n");
+
     if (tstate->on_delete != NULL) {
         tstate->on_delete(tstate->on_delete_data);
     }
+
+    fprintf(stderr, "Checkpoint 11\n");
     PyMem_RawFree(tstate);
+
+    fprintf(stderr, "Checkpoint 12\n");
 }
 
 
 void
 PyThreadState_Delete(PyThreadState *tstate)
 {
+    fprintf(stderr, "Checkpoint 1\n");
+
     if (tstate == GET_TSTATE())
         Py_FatalError("PyThreadState_Delete: tstate is still current");
+
+    fprintf(stderr, "Checkpoint 2\n");
+
     if (_PyRuntime.gilstate.autoInterpreterState &&
         PyThread_tss_get(&_PyRuntime.gilstate.autoTSSkey) == tstate)
     {
         PyThread_tss_set(&_PyRuntime.gilstate.autoTSSkey, NULL);
     }
+
+    fprintf(stderr, "Checkpoint 3\n");
+
     tstate_delete_common(tstate);
+
+    fprintf(stderr, "Checkpoint 13\n");
 }
 
 
